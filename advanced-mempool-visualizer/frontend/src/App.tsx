@@ -41,8 +41,6 @@ function App() {
   // Stats
   const [totalCount, setTotalCount] = useState(0);
   const [tps, setTps] = useState("0.0");
-  const [avgGas, setAvgGas] = useState("0.0");
-  const [totalVolume, setTotalVolume] = useState("0.00");
 
   // Filters state
   const [search, setSearch] = useState("");
@@ -52,6 +50,10 @@ function App() {
 
   const txTimesRef = useRef<number[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
+  
+  // Buffers for rate-limiting updates
+  const pendingQueueRef = useRef<Tx[]>([]);
+  const newTxCountRef = useRef<number>(0);
 
   // Decodes the raw input data hex to identify tx type
   const decodeType = (data: string): string => {
@@ -118,13 +120,13 @@ function App() {
             gweiGasPrice: gweiGas,
           };
 
-          setTotalCount((prev) => prev + 1);
+          // Buffer the incoming transaction
+          pendingQueueRef.current.push(parsedTx);
+          newTxCountRef.current += 1;
 
           // Track arrival times for rolling TPS (last 10 seconds)
           const now = Date.now();
           txTimesRef.current.push(now);
-
-          setTxs((prev) => [parsedTx, ...prev.slice(0, 59)]); // Limit pool to 60 in memory
         } catch (err) {
           console.error("Error parsing websocket message", err);
         }
@@ -151,6 +153,27 @@ function App() {
     };
   }, []);
 
+  // Flush the queue periodically (every 250ms / 4 times per second)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (pendingQueueRef.current.length === 0) return;
+
+      const newTxs = pendingQueueRef.current;
+      pendingQueueRef.current = [];
+
+      const addedCount = newTxCountRef.current;
+      newTxCountRef.current = 0;
+
+      setTotalCount((prev) => prev + addedCount);
+      setTxs((prev) => {
+        const updated = [...newTxs, ...prev];
+        return updated.slice(0, 60);
+      });
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, []);
+
   // Update TPS every second based on rolling window
   useEffect(() => {
     const interval = setInterval(() => {
@@ -165,18 +188,14 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Calculate live stats (Average Gas and volume from current list)
-  useEffect(() => {
-    if (txs.length === 0) return;
+  // Calculate live stats inline to prevent state cascading renders
+  const avgGas = txs.length > 0
+    ? (txs.reduce((sum, tx) => sum + parseFloat(tx.gweiGasPrice), 0) / txs.length).toFixed(1)
+    : "0.0";
 
-    // Average Gas price (Gwei)
-    const totalGas = txs.reduce((sum, tx) => sum + parseFloat(tx.gweiGasPrice), 0);
-    setAvgGas((totalGas / txs.length).toFixed(1));
-
-    // Total ETH Volume
-    const totalEth = txs.reduce((sum, tx) => sum + parseFloat(tx.ethValue), 0);
-    setTotalVolume(totalEth.toFixed(4));
-  }, [txs]);
+  const totalVolume = txs.length > 0
+    ? txs.reduce((sum, tx) => sum + parseFloat(tx.ethValue), 0).toFixed(4)
+    : "0.00";
 
   // Handle address/hash copy
   const handleCopy = (text: string) => {
