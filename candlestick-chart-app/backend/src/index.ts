@@ -1,9 +1,14 @@
 import express from "express";
 import axios from "axios";
 import cors from "cors";
+import http from "http";
+import WebSocket, { WebSocketServer } from "ws";
 
 const app = express();
 const PORT = 4000;
+
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
 
 app.use(cors());
 
@@ -39,7 +44,61 @@ app.get('/candles', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
+wss.on("connection", (client, request) => {
+    console.log("Client connected");
+
+    const url = new URL(request.url || "", "http://localhost:4000");
+    const pair = url.searchParams.get('pair') || 'BTCUSDT';
+    const interval = url.searchParams.get('interval') || '1m';
+
+    console.log("New Client:", pair, interval);
+
+    const binanceWS = new WebSocket(`wss://stream.binance.com/ws/${pair.toLowerCase()}@kline_${interval}`)
+
+    binanceWS.on("open", () => {
+        console.log("Connected to Binance WebSocket");
+    })
+
+    binanceWS.on("message", (data: WebSocket.RawData) => {
+        const parsed = JSON.parse(data.toString());
+
+        const candle = parsed.k;
+
+        const formattedCandle = {
+            time: Math.floor(candle.t / 1000),
+            open: parseFloat(candle.o),
+            high: parseFloat(candle.h),
+            low: parseFloat(candle.l),
+            close: parseFloat(candle.c),
+            volume: parseFloat(candle.v),
+            isFinal: candle.x,
+        };
+
+        // broadcast to frontend clients
+        // wss.clients.forEach((client: { readyState: any; send: (arg0: string) => void; }) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(formattedCandle));
+        }
+        // })
+
+    })
+
+    binanceWS.on("error", (error: Error) => {
+        console.log("Binance WebSocket error:", error);
+    });
+
+    binanceWS.on("close", () => {
+        console.log("Binance WebSocket closed");
+    });
+
+    client.on("close", () => {
+        console.log("Client disconnected");
+        // binanceWS.close();
+    });
+
+
+});
+
+server.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
-    
