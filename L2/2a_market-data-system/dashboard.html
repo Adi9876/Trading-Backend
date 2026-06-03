@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BTCUSDT Order Book</title>
+    <!-- Importing a beautiful font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Modern dark aesthetic based on premium crypto exchanges */
+        :root {
+            --bg-color: #0b0e11;
+            --surface-color: #181a20;
+            --border-color: #2b3139;
+            --text-color: #eaecef;
+            --text-muted: #848e9c;
+            --ask-color: #f6465d;
+            --ask-bg: rgba(246, 70, 93, 0.15);
+            --bid-color: #0ecb81;
+            --bid-bg: rgba(14, 203, 129, 0.15);
+            --font-family: 'Inter', -apple-system, sans-serif;
+        }
+        
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: var(--font-family);
+            margin: 0;
+            padding: 40px 20px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .container {
+            width: 320px;
+            background: var(--surface-color);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+            border: 1px solid var(--border-color);
+        }
+
+        h2 {
+            margin: 0 0 16px 0;
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+        }
+
+        .row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            padding: 2px 0;
+            position: relative;
+            font-variant-numeric: tabular-nums;
+            cursor: pointer;
+        }
+
+        .row:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .price { 
+            font-weight: 600; 
+            z-index: 1; 
+        }
+        
+        .size { 
+            z-index: 1; 
+            color: var(--text-color);
+        }
+
+        .ask .price { color: var(--ask-color); }
+        .bid .price { color: var(--bid-color); }
+
+        .depth-bar {
+            position: absolute;
+            right: 0;
+            top: 0;
+            height: 100%;
+            z-index: 0;
+            transition: width 0.1s ease-out;
+        }
+
+        .ask .depth-bar { background-color: var(--ask-bg); }
+        .bid .depth-bar { background-color: var(--bid-bg); }
+
+        .spread {
+            text-align: center;
+            font-size: 20px;
+            font-weight: 700;
+            padding: 12px 0;
+            margin: 8px 0;
+            color: var(--text-color);
+        }
+        
+        .spread-details {
+            display: block;
+            font-size: 12px;
+            color: var(--text-muted);
+            font-weight: 400;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>BTCUSDT</h2>
+    <div class="header">
+        <span>Price(USDT)</span>
+        <span>Size(BTC)</span>
+    </div>
+    
+    <!-- Asks Container -->
+    <div id="asks"></div>
+    
+    <!-- Current Price / Spread -->
+    <div class="spread" id="spread">
+        Connecting...
+    </div>
+    
+    <!-- Bids Container -->
+    <div id="bids"></div>
+</div>
+
+<script>
+    const ws = new WebSocket('ws://localhost:8000');
+    
+    // We maintain our own local state
+    let bids = new Map();
+    let asks = new Map();
+    let lastRender = 0;
+
+    ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        
+        if (msg.type === 'ORDERBOOK_SNAPSHOT') {
+            bids.clear();
+            asks.clear();
+            
+            // Snapshot from backend is already arrays: [[price, size], ...]
+            msg.data.bids.forEach(([price, size]) => bids.set(parseFloat(price), parseFloat(size)));
+            msg.data.asks.forEach(([price, size]) => asks.set(parseFloat(price), parseFloat(size)));
+            render();
+        } 
+        else if (msg.type === 'ORDERBOOK_DELTA') {
+            // Deltas from backend are objects: [{price, size}, ...]
+            msg.bids.forEach(({price, size}) => {
+                if (size === 0) bids.delete(price);
+                else bids.set(price, size);
+            });
+            msg.asks.forEach(({price, size}) => {
+                if (size === 0) asks.delete(price);
+                else asks.set(price, size);
+            });
+            
+            // Throttle rendering to ~20 FPS so the browser doesn't freeze under heavy load
+            const now = Date.now();
+            if (now - lastRender > 50) {
+                render();
+                lastRender = now;
+            }
+        }
+    };
+
+    function render() {
+        // Sort and slice to top 15 levels
+        const sortedBids = Array.from(bids.entries()).sort((a, b) => b[0] - a[0]).slice(0, 15);
+        const sortedAsks = Array.from(asks.entries()).sort((a, b) => a[0] - b[0]).slice(0, 15);
+
+        // We want the highest ask at the top of the list, so we reverse it
+        sortedAsks.reverse();
+
+        // Calculate max size for the depth bars
+        const maxBidSize = Math.max(...sortedBids.map(b => b[1]), 1);
+        const maxAskSize = Math.max(...sortedAsks.map(a => a[1]), 1);
+
+        const asksHtml = sortedAsks.map(([price, size]) => `
+            <div class="row ask">
+                <div class="depth-bar" style="width: ${(size / maxAskSize) * 100}%"></div>
+                <span class="price">${price.toFixed(1)}</span>
+                <span class="size">${size.toFixed(3)}</span>
+            </div>
+        `).join('');
+
+        const bidsHtml = sortedBids.map(([price, size]) => `
+            <div class="row bid">
+                <div class="depth-bar" style="width: ${(size / maxBidSize) * 100}%"></div>
+                <span class="price">${price.toFixed(1)}</span>
+                <span class="size">${size.toFixed(3)}</span>
+            </div>
+        `).join('');
+
+        document.getElementById('asks').innerHTML = asksHtml;
+        document.getElementById('bids').innerHTML = bidsHtml;
+
+        // Update Spread and Current Price Indicator
+        if (sortedBids.length > 0 && sortedAsks.length > 0) {
+            const lowestAsk = sortedAsks[sortedAsks.length - 1][0];
+            const highestBid = sortedBids[0][0];
+            const spread = lowestAsk - highestBid;
+            
+            document.getElementById('spread').innerHTML = `
+                ${lowestAsk.toFixed(1)} 
+                <span class="spread-details">Spread: ${spread.toFixed(2)}</span>
+            `;
+        }
+    }
+</script>
+
+</body>
+</html>
